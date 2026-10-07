@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PWA Manifest Checker</title>
+<style>
+:root{--bg:#f6f7fb;--card:#fff;--tx:#1b1f2a;--sub:#667085;--bd:#e3e6ee;--ac:#5b4bdb;--ok:#12805c;--ng:#c0392b;--wn:#b7791f}
+@media (prefers-color-scheme:dark){:root{--bg:#0f1117;--card:#181b24;--tx:#e8eaf0;--sub:#9aa3b5;--bd:#2a2f3c;--ac:#8b7dff;--ok:#3ecf9b;--ng:#ff7b6b;--wn:#f0b429}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.6 system-ui,-apple-system,"Hiragino Sans","Noto Sans JP",sans-serif}
+main{max-width:920px;margin:0 auto;padding:24px 16px 64px}
+h1{font-size:22px;margin:0 0 4px}
+.sub{color:var(--sub);margin:0 0 20px;font-size:13px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:16px;margin-bottom:16px}
+.card h2{font-size:15px;margin:0 0 12px}
+.row{display:flex;gap:8px;flex-wrap:wrap}
+input[type=url],textarea{flex:1;min-width:0;padding:10px 12px;border:1px solid var(--bd);border-radius:8px;background:var(--bg);color:var(--tx);font:inherit}
+textarea{width:100%;min-height:120px;font-family:ui-monospace,monospace;font-size:12px}
+button{padding:10px 16px;border:0;border-radius:8px;background:var(--ac);color:#fff;font:inherit;cursor:pointer}
+button.sec{background:transparent;color:var(--ac);border:1px solid var(--ac)}
+button:disabled{opacity:.5}
+details{margin-top:12px}summary{cursor:pointer;color:var(--sub);font-size:13px}
+label.chk{font-size:13px;color:var(--sub);display:flex;gap:6px;align-items:center;margin-top:10px}
+.msg{padding:10px 12px;border-radius:8px;font-size:13px;margin-top:12px;word-break:break-all}
+.msg.err{background:color-mix(in srgb,var(--ng) 14%,transparent);color:var(--ng)}
+.msg.info{background:color-mix(in srgb,var(--ac) 12%,transparent)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+td,th{text-align:left;padding:7px 8px;border-bottom:1px solid var(--bd);vertical-align:top;word-break:break-word}
+th{width:34%;color:var(--sub);font-weight:500}
+.sw{display:inline-block;width:14px;height:14px;border-radius:4px;border:1px solid var(--bd);vertical-align:-2px;margin-right:6px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px}
+.grid.shots{grid-template-columns:repeat(auto-fill,minmax(200px,1fr))}
+.it{border:1px solid var(--bd);border-radius:10px;padding:8px;font-size:12px;color:var(--sub);background:var(--bg)}
+.it .im{display:flex;align-items:center;justify-content:center;min-height:90px;background:repeating-conic-gradient(#8881 0 25%,transparent 0 50%) 0/16px 16px;border-radius:6px;margin-bottom:6px;overflow:hidden}
+.it img{max-width:100%;max-height:340px;display:block}
+.it .fail{color:var(--ng);padding:8px}
+.chk-l{list-style:none;padding:0;margin:0;font-size:13px}
+.chk-l li{padding:3px 0}.ok{color:var(--ok)}.ng{color:var(--ng)}.wn{color:var(--wn)}
+pre{margin:0;overflow:auto;max-height:420px;font-size:12px;background:var(--bg);padding:12px;border-radius:8px}
+.tag{display:inline-block;padding:1px 8px;border-radius:99px;background:var(--bg);border:1px solid var(--bd);font-size:12px;margin:0 4px 4px 0}
+.hide{display:none}
+</style>
+</head>
+<body>
+<main>
+<h1>PWA Manifest Checker</h1>
+<p class="sub">サイトURL または manifest.json のURLを入力すると、内容・アイコン・スクリーンショットを確認できます。</p>
+
+<div class="card">
+  <div class="row">
+    <input id="url" type="url" placeholder="https://example.com/ または https://example.com/manifest.json">
+    <button id="go">確認する</button>
+  </div>
+  <label class="chk"><input type="checkbox" id="proxy" checked> CORSで失敗した場合、公開プロキシ経由で再取得する</label>
+  <details>
+    <summary>JSONを直接貼り付けて確認</summary>
+    <p class="sub" style="margin:8px 0">画像の相対パス解決用にベースURL(manifestのURL)も入力してください。</p>
+    <input id="base" type="url" placeholder="ベースURL 例: https://example.com/manifest.json" style="width:100%;margin-bottom:8px">
+    <textarea id="paste" placeholder='{"name":"My App", ...}'></textarea>
+    <div class="row" style="margin-top:8px"><button class="sec" id="parse">貼り付けた内容を解析</button></div>
+  </details>
+  <div id="status"></div>
+</div>
+
+<div id="out" class="hide"></div>
+</main>
+
+<script>
+const $=id=>document.getElementById(id);
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const status=(t,k)=>{$('status').innerHTML=t?`<div class="msg ${k}">${t}</div>`:''};
+const PROXIES=[u=>'https://corsproxy.io/?'+encodeURIComponent(u),u=>'https://api.allorigins.win/raw?url='+encodeURIComponent(u)];
+
+async function getText(u,useProxy){
+  try{const r=await fetch(u);if(!r.ok)throw new Error('HTTP '+r.status);return await r.text();}
+  catch(e){
+    if(!useProxy)throw e;
+    let last=e;
+    for(const p of PROXIES){try{const r=await fetch(p(u));if(!r.ok)throw new Error('HTTP '+r.status);return await r.text();}catch(x){last=x}}
+    throw last;
+  }
+}
+function looksJson(t){return /^\s*[\{\[]/.test(t)}
+
+async function run(){
+  let u=$('url').value.trim();
+  if(!u)return;
+  if(!/^https?:\/\//.test(u))u='https://'+u;
+  $('go').disabled=true;status('取得中…','info');
+  const px=$('proxy').checked;
+  try{
+    let text=await getText(u,px),murl=u;
+    if(!looksJson(text)){
+      const doc=new DOMParser().parseFromString(text,'text/html');
+      const l=doc.querySelector('link[rel~="manifest" i]');
+      if(!l)throw new Error('HTML内に <link rel="manifest"> が見つかりません(PWAではない可能性があります)');
+      murl=new URL(l.getAttribute('href'),u).href;
+      status('manifest を取得中: '+esc(murl),'info');
+      text=await getText(murl,px);
+    }
+    render(JSON.parse(text),murl,text);status('');
+  }catch(e){
+    status('取得に失敗しました: '+esc(e.message)+'<br>CORS制限の可能性があります。「JSONを直接貼り付けて確認」もお試しください。','err');
+  }finally{$('go').disabled=false}
+}
+function runPaste(){
+  try{
+    const t=$('paste').value;const b=$('base').value.trim()||location.href;
+    render(JSON.parse(t),b,t);status('');
+  }catch(e){status('JSONの解析に失敗: '+esc(e.message),'err')}
+}
+
+function row(k,v){return v===undefined||v===''?'':`<tr><th>${k}</th><td>${v}</td></tr>`}
+function color(c){return c?`<span class="sw" style="background:${esc(c)}"></span>${esc(c)}`:undefined}
+function card(it,base){
+  let src='';try{src=new URL(it.src,base).href}catch{}
+  const meta=[it.sizes,it.type,it.purpose&&('purpose: '+it.purpose),it.form_factor&&('form: '+it.form_factor),it.label].filter(Boolean).map(esc).join('<br>');
+  return `<div class="it"><div class="im"><img src="${esc(src)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.outerHTML='<div class=fail>画像を読み込めません</div>'"></div>${meta}<br><a href="${esc(src)}" target="_blank" rel="noopener" style="color:var(--ac);word-break:break-all">${esc(it.src||'')}</a></div>`;
+}
+function render(m,base,raw){
+  const icons=Array.isArray(m.icons)?m.icons:[],shots=Array.isArray(m.screenshots)?m.screenshots:[],sc=Array.isArray(m.shortcuts)?m.shortcuts:[];
+  const sizes=ic=>(ic.sizes||'').split(/\s+/);
+  const has=n=>icons.some(i=>sizes(i).includes(n+'x'+n));
+  const chk=[];
+  const add=(ok,t,warn)=>chk.push(`<li class="${ok?'ok':warn?'wn':'ng'}">${ok?'✔':warn?'△':'✖'} ${t}</li>`);
+  add(!!(m.name||m.short_name),'name / short_name');
+  add(!!m.start_url,'start_url',true);
+  add(['standalone','fullscreen','minimal-ui'].includes(m.display)||!!m.display_override,'display が standalone 等(インストール可能)');
+  add(has(192),'192x192 アイコン');add(has(512),'512x512 アイコン');
+  add(icons.some(i=>/maskable/.test(i.purpose||'')),'maskable アイコン',true);
+  add(!!m.theme_color,'theme_color',true);add(!!m.background_color,'background_color',true);
+  add(shots.length>0,'screenshots(リッチなインストールUI用)',true);
+
+  const ov=[
+    row('name',esc(m.name||'')),row('short_name',esc(m.short_name||'')),row('description',esc(m.description||'')),
+    row('id',esc(m.id||'')),row('start_url',esc(m.start_url||'')),row('scope',esc(m.scope||'')),
+    row('display',esc(m.display||'')),row('display_override',m.display_override?esc(m.display_override.join(', ')):''),
+    row('orientation',esc(m.orientation||'')),row('theme_color',color(m.theme_color)),row('background_color',color(m.background_color)),
+    row('lang / dir',esc([m.lang,m.dir].filter(Boolean).join(' / '))),
+    row('categories',(m.categories||[]).map(c=>`<span class="tag">${esc(c)}</span>`).join('')),
+    row('manifest URL',`<a href="${esc(base)}" target="_blank" rel="noopener" style="color:var(--ac)">${esc(base)}</a>`)
+  ].join('');
+  const known=['name','short_name','description','id','start_url','scope','display','display_override','orientation','theme_color','background_color','lang','dir','categories','icons','screenshots','shortcuts'];
+  const other=Object.keys(m).filter(k=>!known.includes(k)).map(k=>row(esc(k),`<code>${esc(JSON.stringify(m[k]))}</code>`)).join('');
+
+  $('out').innerHTML=`
+  <div class="card"><h2>基本情報</h2><table>${ov}${other}</table></div>
+  <div class="card"><h2>チェック</h2><ul class="chk-l">${chk.join('')}</ul></div>
+  <div class="card"><h2>スクリーンショット (${shots.length})</h2>${shots.length?`<div class="grid shots">${shots.map(s=>card(s,base)).join('')}</div>`:'<span class="sub">なし</span>'}</div>
+  <div class="card"><h2>アイコン (${icons.length})</h2>${icons.length?`<div class="grid">${icons.map(s=>card(s,base)).join('')}</div>`:'<span class="sub">なし</span>'}</div>
+  ${sc.length?`<div class="card"><h2>ショートカット (${sc.length})</h2><table>${sc.map(s=>row(esc(s.name||s.short_name||''),esc(s.url||'')+(s.description?'<br>'+esc(s.description):''))).join('')}</table></div>`:''}
+  <div class="card"><h2>Raw JSON</h2><pre>${esc(JSON.stringify(m,null,2))}</pre></div>`;
+  $('out').classList.remove('hide');
+}
+$('go').onclick=run;$('parse').onclick=runPaste;
+$('url').addEventListener('keydown',e=>{if(e.key==='Enter')run()});
+</script>
+</body>
+</html>
